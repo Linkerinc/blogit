@@ -1,0 +1,708 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Blog-it [내부직원용] | 링커</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"></script>
+<style>
+* { box-sizing: border-box; }
+body { margin: 0; background: #F5F5F3; font-family: -apple-system, BlinkMacSystemFont, 'Apple SD Gothic Neo', 'Noto Sans KR', sans-serif; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+// ★★★ 가람님 Cloudflare Worker 주소를 여기에 입력 ★★★
+// 예) "https://blogit-proxy.본인계정.workers.dev"
+const PROXY_URL = "https://blogit-proxy.krcha.workers.dev";
+
+// 통과코드: 직원이 이 사이트를 처음 열 때 한 번 입력 → 브라우저에 저장됨.
+// (코드 자체는 여기 없음. 서버의 ACCESS_CODE와 일치해야만 작동.)
+function getAccessCode() {
+  var c = sessionStorage.getItem("blogit_code");
+  if (!c) {
+    c = window.prompt("접근 코드를 입력하세요:") || "";
+    if (c) sessionStorage.setItem("blogit_code", c);
+  }
+  return c;
+}
+
+const { useState, useRef } = React;
+const e = React.createElement;
+
+const C = { accent:"#534AB7", bg:"#F5F5F3", surf:"#FFFFFF", border:"#E2E2DE", borderDark:"#CCCCC8", text:"#1A1A18", muted:"#6B6B66", purple:"#534AB7", purpleLight:"#EEEDFE", purpleDark:"#26215C", orange:"#D97706", orangeLight:"#FEF9EC" };
+const inp = { background:C.surf, border:"1px solid "+C.border, color:C.text, padding:"10px 12px", fontSize:14, fontFamily:"inherit", outline:"none", boxSizing:"border-box", borderRadius:"8px" };
+const lbl = { display:"block", fontSize:13, fontWeight:500, color:C.text, marginBottom:6 };
+
+const DEFAULT_COND = { charMin:2000, charMax:3000, mainKwMin:4, mainKwMax:5, subKwMin:4, subKwMax:5 };
+
+// ── 글 스타일 프리셋
+const STYLE_PRESETS = [
+  { id:"default", label:"기본 (현장 드라마형)", desc:"현장 상황 묘사, 작업자 대화 인용, 수치·법규 기반 신뢰도 확보",
+    prompt:"서론: 현장 상황을 드라마처럼 생생하게 묘사하며 시작. 구체적 시간·장소·행동 묘사. 작업자 말을 이탤릭 인용으로 활용.\n본론: 문제→공감→해결책→추천대상 순서. 제품 스펙을 수치로 명시. 인과 체인으로 설득(착용률 상승→사고 감소→생산성 향상). 법규·인증 자연스럽게 언급. ✅ 추천 대상 명시. 2개 이상 제품 비교 시 표 활용.\n마무리: 대리점을 현장 분석·컨설팅 파트너로 포지셔닝." },
+  { id:"spec", label:"스펙 중심형", desc:"제품 스펙과 수치를 앞세워 전문성 강조, 구매 담당자·안전관리자 타깃",
+    prompt:"서론: 제품이 해결하는 핵심 문제를 한 문장으로 제시 후 규격·인증 데이터로 바로 진입.\n본론: 제품 스펙을 항목별로 명확하게 정리. 경쟁 제품과 비교표 반드시 포함. 법규 대응 근거 명시.\n마무리: B2B 대량 납품·샘플 지원·정기 공급 가능함을 강조하며 문의 유도." },
+  { id:"story", label:"감성 스토리텔링형", desc:"작업자의 하루를 따라가는 서사 구조, 감성적 공감 극대화",
+    prompt:"서론: 특정 작업자의 하루 일과를 따라가는 3인칭 관찰 시점으로 시작.\n본론: 작업자 입장에서 느끼는 불편함과 개선 경험을 스토리로 전개. 제품 스펙은 스토리 흐름 안에서 자연스럽게 녹여서 설명.\n마무리: 작업자의 변화된 일상으로 마무리 후 파트너 포지셔닝." },
+  { id:"roi", label:"비용 절감·ROI 강조형", desc:"도입 비용 대비 효과를 수치로 설득, 구매 결정권자 타깃",
+    prompt:"서론: 현재 방식의 비용·손실을 구체적 수치로 제시하며 시작.\n본론: 문제를 비용·시간 손실로 수치화. Before/After 형식으로 효과 대비. TCO 관점으로 경제성 설명.\n마무리: 샘플 체험→도입 결정 유도 흐름으로 마무리." }
+];
+
+// ── Few-shot 예시 (실제 작성 원고에서 추출)
+const FEW_SHOT_EXAMPLES = `
+[참고 예시 1 — 터치 장갑 현장 드라마형]
+현장에서 일하다 보면 꼭 이런 순간이 옵니다. 도면을 확인해야 하는데 손엔 장갑이 끼워져 있고, 배달 앱에 새 주문이 떴는데 손이 묶여 있고. 공감이 되시는 분들, 분명히 계시죠?
+장갑을 벗고 → 스마트폰을 확인하고 → 다시 장갑을 끼고. 이 동작을 하루에 몇 번이나 반복하고 계신지 세어보신 적 있으신가요?
+장갑을 벗고 다시 끼는 시간이 한 번에 30초라면, 하루 20번이면 10분 손실. 한 달이면 수백 분. 이건 단순한 불편함이 아니라 생산성 문제입니다.
+✅ 추천 대상: 물류센터 작업자 / 제조업·경공업 현장 / 스마트기기 사용이 잦은 일반 산업 현장
+
+[참고 예시 2 — 절단 장갑 법규·수치 기반]
+월요일 오전 8시, 공장 라인이 가동을 시작합니다. 작업자들은 어제와 똑같이 자리에 앉고, 어제와 똑같은 동작을 반복합니다. 그리고 그 '어제와 똑같은 순간'에, 사고가 납니다.
+현장 관리자들이 가장 많이 듣는 말이 있습니다. "장갑은 지급하고 있어요. 근데 작업자들이 안 껴요." 이게 핵심입니다. 안전용품은 '지급한 것'이 아니라 '착용된 것'이 기준입니다.
+EN388 절단 저항 5등급(최고). 착용률 상승 → 사고 발생 감소 → 생산성 향상. 중대재해처벌법이 강화된 지금, 검증된 베임방지장갑 구매가 가장 확실하고 저렴한 보험인 이유입니다.
+
+[참고 예시 3 — 여름 장갑 통기성 수치]
+여름철 현장에서 일반 작업코팅장갑을 끼고 일하다 보면 30분도 채 지나지 않아 내부에 땀이 차기 시작합니다. 손바닥에 땀이 차면 그립력이 급격히 저하됩니다.
+통기성은 수치로 증명됩니다. 한국섬유개발연구원(Ktdi)의 공기투과율 검사에서 손등 기준 257cm²/sec를 기록해, 일반 장갑(134cm²/sec) 대비 약 2배에 달하는 통기성을 확인받았습니다.
+
+[참고 예시 4 — PAPR Level 구분 소제목 형식]
+**Level 1 | 분진 집중 현장의 표준 — 3M TR-315**
+"30분만 지나면 얼굴에 땀 차고, 숨이 막혀서 그냥 벗어버려요." 필터 저항 때문에 마스크가 턱 아래로 내려가는 순간, 유해 분진은 그대로 폐로 향합니다.
+✔ 추천 현장: 건설·토목, 목재·석재 가공, 일반 제조, 용접 흄 발생 공정
+
+[참고 예시 5 — 마무리 파트너 포지셔닝]
+저희는 제품 납품에 그치지 않습니다. 작업 환경 분석을 바탕으로 공정별 최적 적용을 함께 제안하고, 사업장 규모에 맞는 B2B 납품 단가를 안내해 드립니다. 귀사의 공정을 함께 최적화하는 전문 파트너입니다.`;
+
+// ── 시스템 프롬프트 빌더
+function buildSystemPrompt(cond, stylePrompt, examplesText) {
+  const style = (stylePrompt && stylePrompt.trim()) ? stylePrompt.trim() : STYLE_PRESETS[0].prompt;
+  const examples = examplesText || FEW_SHOT_EXAMPLES;
+  return `당신은 링커(Linker Inc.)의 네이버 B2B 산업용품 블로그 전문 작가입니다.
+아래 [글쓰기 스타일], [참고 예시], [필수 조건]을 모두 반드시 준수하세요.
+
+[글쓰기 스타일]
+${style}
+
+[참고 예시 — 이 스타일과 문체를 정확히 따를 것]
+${examples}
+
+[필수 조건 — 절대 준수]
+① 문체: 반드시 존댓말(해요체 또는 합쇼체). 반말 절대 금지. 예) '합니다', '입니다', '하세요'
+② 글자수: 공백 포함 정확히 ${cond.charMin}자 이상 ${cond.charMax}자 이하. 미달 시 본론 설명을 추가하여 ${cond.charMin}자 이상을 반드시 맞출 것.
+③ 메인 키워드(앞 1~2개): ${cond.mainKwMin}~${cond.mainKwMax}회 자연스럽게 반복 (초과 금지)
+   서브 키워드(나머지): 각 ${cond.subKwMin}~${cond.subKwMax}회 자연스럽게 반복 (초과 금지)
+④ 제목 포함하지 말 것, 본문만 출력
+⑤ 소제목은 **소제목** 형식, 앞뒤 빈 줄 삽입
+⑥ 가독성: 문단 3~4문장 후 빈 줄 구분, 한 문장 50자 이내
+⑦ 해시태그: 본문 맨 마지막에 # 형식으로 정확히 30개. 한 줄로 나열. 절대 누락 금지.`;
+}
+
+// ── 학습 원고 파일 읽기
+async function readExampleFile(file) {
+  if (file.type === "text/plain" || file.name.endsWith(".txt") || file.name.endsWith(".md")) {
+    return new Promise(function(res, rej) {
+      var r = new FileReader();
+      r.onload = function() { res(r.result); };
+      r.onerror = function() { rej(new Error("읽기 실패")); };
+      r.readAsText(file, "UTF-8");
+    });
+  }
+  if (file.name.endsWith(".docx")) {
+    return new Promise(function(res, rej) {
+      var r = new FileReader();
+      r.onload = async function(ev) {
+        try {
+          var result = await mammoth.extractRawText({ arrayBuffer: ev.target.result });
+          res(result.value);
+        } catch(err) { rej(err); }
+      };
+      r.onerror = function() { rej(new Error("읽기 실패")); };
+      r.readAsArrayBuffer(file);
+    });
+  }
+  throw new Error(file.name + " — .docx 또는 .txt 파일만 가능합니다.");
+}
+
+// ── 이미지 프롬프트 시스템
+const IMAGE_AI_SYSTEMS = {
+  gemini: {
+    label: "Gemini",
+    color: "#4285F4",
+    light: "#EFF6FF",
+    instruction: `당신은 구글 Gemini 이미지 생성용 프롬프트 전문가입니다.
+아래 블로그 원고를 읽고, 원고의 흐름에서 필요한 이미지 ${"{count}"}개를 선정하여 각각의 Gemini 이미지 생성 프롬프트를 작성하세요.
+
+출력 형식 (JSON만, 코드블록 없이):
+{"images":[{"number":1,"placement":"서론 첫 문단 아래","subject":"이미지 주제 (한국어 설명)","prompt":"A professional industrial safety photograph of [상세 영문 프롬프트]. Photorealistic, high quality, bright lighting, clean background. --style photorealistic --ar 4:3"}]}
+
+규칙:
+- 제목 이미지 1개 반드시 포함 (블로그 썸네일용, 16:9 비율)
+- 본문 삽입 이미지 ${"{count-1}"}개
+- 각 이미지는 실제 현장감 있는 산업용 사진 스타일
+- 영문 프롬프트는 구체적이고 상세하게 (30단어 이상)
+- 제품명, 브랜드명은 그대로 포함`,
+    format: (img) => img.prompt
+  },
+  gpt: {
+    label: "GPT (DALL-E)",
+    color: "#10A37F",
+    light: "#F0FDF4",
+    instruction: `당신은 OpenAI DALL-E 이미지 생성용 프롬프트 전문가입니다.
+아래 블로그 원고를 읽고, 원고의 흐름에서 필요한 이미지 ${"{count}"}개를 선정하여 각각의 DALL-E 프롬프트를 작성하세요.
+
+출력 형식 (JSON만, 코드블록 없이):
+{"images":[{"number":1,"placement":"서론 첫 문단 아래","subject":"이미지 주제 (한국어 설명)","prompt":"DALL-E용 영문 프롬프트"}]}
+
+규칙:
+- 제목 이미지 1개 반드시 포함 (블로그 썸네일용)
+- 본문 삽입 이미지 ${"{count-1}"}개
+- DALL-E 특성상 텍스트 포함 요청 금지
+- "photorealistic style, professional industrial photography" 항상 포함
+- 구체적인 장면 묘사 위주로 작성`,
+    format: (img) => img.prompt
+  },
+  claude: {
+    label: "Claude",
+    color: "#D97706",
+    light: "#FEF9EC",
+    instruction: `당신은 Anthropic Claude 이미지 생성용 프롬프트 전문가입니다.
+아래 블로그 원고를 읽고, 원고의 흐름에서 필요한 이미지 ${"{count}"}개를 선정하여 각각의 Claude 이미지 생성 프롬프트를 작성하세요.
+
+출력 형식 (JSON만, 코드블록 없이):
+{"images":[{"number":1,"placement":"서론 첫 문단 아래","subject":"이미지 주제 (한국어 설명)","prompt":"Claude 이미지 생성용 상세 프롬프트 (한국어+영어 혼용 가능)"}]}
+
+규칙:
+- 제목 이미지 1개 반드시 포함 (블로그 썸네일용)
+- 본문 삽입 이미지 ${"{count-1}"}개
+- 현장 사진 느낌의 사실적 묘사
+- 조명, 구도, 분위기까지 상세하게 명시`,
+    format: (img) => img.prompt
+  }
+};
+
+function fileToBase64(file) {
+  return new Promise((res,rej) => { const r=new FileReader(); r.onload=()=>res(r.result.split(",")[1]); r.onerror=()=>rej(new Error("읽기 실패")); r.readAsDataURL(file); });
+}
+
+function calcChars(t) { return t.replace(/#[^\s#]+(\s|$)/g,"").trim().length; }
+
+function exportToWord(content, product, dealer, revLabel, blogTitle) {
+  var title = "[블로그] " + dealer + " - " + product + " " + revLabel;
+  function toWordHtml(text) {
+    var lines = text.split("\n"); var html = ""; var i = 0;
+    while (i < lines.length) {
+      var line = lines[i];
+      if (line.trim().startsWith("|")) {
+        var tLines = []; while (i < lines.length && lines[i].trim().startsWith("|")) { tLines.push(lines[i]); i++; }
+        var rows = tLines.filter(function(l){ return !/^\|[\s\-|]+\|?\s*$/.test(l.trim()); });
+        html += '<table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;width:100%;font-size:10pt;margin:8pt 0;">';
+        rows.forEach(function(row, ri) {
+          var cells = row.split("|").map(function(c){ return c.trim(); }).filter(function(c,ci,arr){ return ci>0&&ci<arr.length-1; });
+          html += "<tr>"; cells.forEach(function(cell) {
+            if (ri===0) html += "<th style='background:#EEEDFE;color:#26215C;font-weight:bold;text-align:center;padding:6pt 8pt;border:1pt solid #CCC;'>" + cell + "</th>";
+            else html += "<td style='text-align:center;padding:5pt 8pt;border:1pt solid #DDD;'>" + cell + "</td>";
+          }); html += "</tr>";
+        }); html += "</table>"; continue;
+      }
+      if (/^\*\*[^*]+\*\*$/.test(line.trim())) { html += "<p style='font-weight:bold;font-size:12pt;margin:12pt 0 4pt;color:#26215C;'>" + line.trim().replace(/\*\*/g,"") + "</p>"; i++; continue; }
+      if (line.trim().startsWith("#")) { html += "<p style='font-size:9pt;color:#888;margin:2pt 0;'>" + line.trim() + "</p>"; i++; continue; }
+      if (line.trim() === "") { html += "<p style='margin:4pt 0;'>&nbsp;</p>"; i++; continue; }
+      var l = line.replace(/\*\*(.+?)\*\*/g,"<b>$1</b>").replace(/\*(.+?)\*/g,"<i>$1</i>");
+      html += "<p style='margin:3pt 0;line-height:1.7;'>" + l + "</p>"; i++;
+    } return html;
+  }
+  var bodyHtml = toWordHtml(content);
+  var html = "<html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'><head><meta charset='utf-8'><title>" + title + "</title><style>body{font-family:'맑은 고딕',Arial;font-size:11pt;line-height:1.85;margin:48pt}h1{font-size:15pt;border-bottom:1.5pt solid #534AB7;padding-bottom:5pt;margin-bottom:8pt}h2{font-size:13pt;color:#26215C;margin-bottom:10pt}</style></head><body><h1>" + title + "</h1>" + (blogTitle?"<h2>"+blogTitle+"</h2>":"") + bodyHtml + "</body></html>";
+  var blob = new Blob(["\ufeff",html],{type:"application/msword"});
+  var url = URL.createObjectURL(blob); var a = document.createElement("a");
+  a.href=url; a.download=dealer+"_"+product+"_"+revLabel+".doc";
+  document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+}
+
+function renderMarkdown(text) {
+  var lines = text.split("\n"); var html = ""; var i = 0;
+  while (i < lines.length) {
+    var line = lines[i];
+    if (line.trim().startsWith("|")) {
+      var tLines = []; while (i < lines.length && lines[i].trim().startsWith("|")) { tLines.push(lines[i]); i++; }
+      var rows = tLines.filter(function(l){ return !/^\|[\s\-|]+\|?\s*$/.test(l.trim()); });
+      html += '<table style="width:100%;border-collapse:collapse;margin:14px 0;font-size:13px;">';
+      rows.forEach(function(row,ri) {
+        var cells = row.split("|").map(function(c){ return c.trim(); }).filter(function(c,ci,arr){ return ci>0&&ci<arr.length-1; });
+        html += "<tr>"; cells.forEach(function(cell) {
+          if(ri===0) html += "<th style='background:#EEEDFE;color:#26215C;padding:8px 12px;border:1px solid #D4D0F0;font-weight:600;text-align:center;'>" + applyInline(cell) + "</th>";
+          else html += "<td style='padding:8px 12px;border:1px solid #E2E2DE;color:#1A1A18;text-align:center;'>" + applyInline(cell) + "</td>";
+        }); html += "</tr>";
+      }); html += "</table>"; continue;
+    }
+    if (/^\*\*[^*]+\*\*$/.test(line.trim())) { html += "<p style='font-weight:600;font-size:15px;color:#26215C;margin:18px 0 8px;border-left:3px solid #534AB7;padding-left:10px;'><b>" + line.trim().replace(/\*\*/g,"") + "</b></p>"; i++; continue; }
+    if (line.trim().startsWith("#")) {
+      var tags = line.trim().split(/\s+/);
+      html += "<p style='margin:4px 0;'>" + tags.map(function(t){ return "<span style='display:inline-block;background:#EEEDFE;color:#534AB7;padding:3px 10px;margin:2px 3px;font-size:12px;border-radius:99px;font-weight:500;'>" + t + "</span>"; }).join("") + "</p>"; i++; continue;
+    }
+    if (line.trim() === "") { html += "<br>"; i++; continue; }
+    html += "<p style='margin:3px 0;'>" + applyInline(line) + "</p>"; i++;
+  } return html;
+}
+function applyInline(text) { return text.replace(/\*\*(.+?)\*\*/g,"<b style='color:#1A1A18;'>$1</b>").replace(/\*(.+?)\*/g,"<i style='color:#6B6B66;'>$1</i>"); }
+
+async function callClaude(messages, system, maxTokens) {
+  if (!PROXY_URL || PROXY_URL.includes("여기에")) {
+    throw new Error("PROXY_URL이 설정되지 않았습니다. 파일에서 PROXY_URL에 Worker 주소를 입력해주세요.");
+  }
+  var body = { model:"claude-sonnet-4-20250514", max_tokens:maxTokens||3000, messages:messages };
+  if(system) body.system = system;
+  var res = await fetch(PROXY_URL, {
+    method:"POST",
+    headers:{ "Content-Type":"application/json", "x-access-code":getAccessCode() },
+    body:JSON.stringify(body)
+  });
+  if(res.status === 401){ sessionStorage.removeItem("blogit_code"); throw new Error("접근 코드가 올바르지 않습니다. 새로고침 후 다시 입력해주세요."); }
+  if(!res.ok) throw new Error("API 오류 " + res.status);
+  var data = await res.json();
+  return (data.content && data.content.find(function(b){ return b.type==="text"; }) || {}).text || "";
+}
+
+const ALLOWED = ["application/pdf","image/jpeg","image/png","image/webp"];
+
+function App() {
+  var [dealer,setDealer] = useState("");
+  var [product,setProduct] = useState("");
+  var [notes,setNotes] = useState("");
+  var [files,setFiles] = useState([]);
+  var [dragging,setDragging] = useState(false);
+  var fileRef = useRef();
+  var [cond,setCond] = useState(DEFAULT_COND);
+  var [showCond,setShowCond] = useState(false);
+  var [selectedStyle,setSelectedStyle] = useState("default");
+  var [customStyle,setCustomStyle] = useState("");
+  var [showStyle,setShowStyle] = useState(false);
+  var [analyzing,setAnalyzing] = useState(false);
+  var [keywords,setKeywords] = useState([]);
+  var [concepts,setConcepts] = useState([]);
+  var [titles,setTitles] = useState([]);
+  var [kwInput,setKwInput] = useState("");
+  var [selectedConcept,setSelectedConcept] = useState(null);
+  var [selectedTitle,setSelectedTitle] = useState(null);
+  var [generating,setGenerating] = useState(false);
+  var [history,setHistory] = useState([]);
+  var [activeRev,setActiveRev] = useState(0);
+  var [revRequest,setRevRequest] = useState("");
+  var [revising,setRevising] = useState(false);
+  var [error,setError] = useState("");
+  var [step,setStep] = useState(1);
+  var [copied,setCopied] = useState(false);
+
+  // ── 이미지 프롬프트 관련
+  var [imageCount,setImageCount] = useState(10);
+  var [selectedAI,setSelectedAI] = useState("gemini");
+  var [imagePrompts,setImagePrompts] = useState([]);
+  var [generatingImages,setGeneratingImages] = useState(false);
+  var [showImageSection,setShowImageSection] = useState(false);
+  var [copiedImgIdx,setCopiedImgIdx] = useState(null);
+
+  // ── 학습 원고 관련
+  var [exampleFiles,setExampleFiles] = useState([]); // [{name, text}]
+  var [loadingExamples,setLoadingExamples] = useState(false);
+  var [showExamples,setShowExamples] = useState(false);
+  var exFileRef = useRef();
+
+  var updateCond = function(k,v){ var n=parseInt(v); if(!isNaN(n)&&n>=0) setCond(function(p){ var o=Object.assign({},p); o[k]=n; return o; }); };
+  var activeStylePrompt = customStyle.trim() ? customStyle : (STYLE_PRESETS.find(function(p){ return p.id===selectedStyle; })||STYLE_PRESETS[0]).prompt;
+
+  // 현재 사용할 예시 텍스트 (업로드된 게 있으면 그걸로, 없으면 내장 기본값)
+  var getExamplesText = function() {
+    if (exampleFiles.length === 0) return FEW_SHOT_EXAMPLES;
+    return exampleFiles.map(function(f, i) {
+      return "[참고 예시 " + (i+1) + " — " + f.name + "]\n" + f.text.slice(0, 1500);
+    }).join("\n\n---\n\n");
+  };
+
+  // 학습 원고 업로드 처리
+  var handleExampleFiles = async function(fileList) {
+    var arr = Array.from(fileList);
+    var invalid = arr.filter(function(f){ return !f.name.endsWith(".docx") && !f.name.endsWith(".txt") && !f.name.endsWith(".md"); });
+    if (invalid.length) { setError("학습 원고는 .docx, .txt, .md 파일만 가능합니다."); return; }
+    setLoadingExamples(true); setError("");
+    try {
+      var results = await Promise.all(arr.map(async function(f) {
+        var text = await readExampleFile(f);
+        return { name: f.name, text: text, size: f.size };
+      }));
+      setExampleFiles(function(prev) {
+        var names = new Set(prev.map(function(f){ return f.name; }));
+        return prev.concat(results.filter(function(f){ return !names.has(f.name); }));
+      });
+    } catch(err) { setError("파일 읽기 오류: " + err.message); }
+    finally { setLoadingExamples(false); }
+  };
+
+  var handleFiles = function(inc) {
+    var arr = Array.from(inc);
+    if(arr.some(function(f){ return !ALLOWED.includes(f.type); })) { setError("PDF, JPG, PNG, WEBP만 가능합니다."); return; }
+    setFiles(function(prev){ var names=new Set(prev.map(function(f){ return f.name; })); return prev.concat(arr.filter(function(f){ return !names.has(f.name); })); });
+    setError("");
+  };
+
+  var buildFileContent = async function() {
+    return await Promise.all(files.map(async function(f) {
+      var b64 = await fileToBase64(f);
+      return f.type.startsWith("image/") ? {type:"image",source:{type:"base64",media_type:f.type,data:b64}} : {type:"document",source:{type:"base64",media_type:"application/pdf",data:b64}};
+    }));
+  };
+
+  var calcCharsLocal = function(t){ return t.replace(/#[^\s#]+(\s|$)/g,"").trim().length; };
+
+  var analyze = async function() {
+    if(!product) { setError("제품명을 입력해주세요."); return; }
+    setAnalyzing(true); setError("");
+    try {
+      var fcs = await buildFileContent();
+      var prompt = "제품명: " + product + (notes?"\n추가 정보: "+notes:"") + (files.length?"\n\n첨부 자료 "+files.length+"개를 분석해주세요.":"") + '\n\n다음을 JSON으로만 반환하세요 (코드블록 없이):\n{"keywords":[{"text":"키워드","isMain":true}],"concepts":[{"title":"컨셉 제목","desc":"2~3문장 방향 설명"}],"titles":["제목1","제목2","제목3","제목4"]}\n- keywords: 메인 2개(isMain:true) + 서브 8~10개(isMain:false), 합계 최소 10개 이상\n- concepts: 4가지 (현장 안전형 / 비용 절감형 / 기술 스펙형 / 시즌·트렌드형)\n- titles: 각 컨셉에 맞는 블로그 제목 후보 4개 (SEO 최적화, 클릭 유도형, 30자 내외)';
+      var uc = fcs.length ? fcs.concat([{type:"text",text:prompt}]) : prompt;
+      var txt = await callClaude([{role:"user",content:uc}], "", 2000);
+      var parsed = JSON.parse(txt.replace(/```json|```/g,"").trim());
+      setKeywords(parsed.keywords||[]); setConcepts(parsed.concepts||[]); setTitles(parsed.titles||[]);
+      setSelectedConcept(null); setSelectedTitle(null); setHistory([]); setActiveRev(0);
+      setImagePrompts([]); setShowImageSection(false); setStep(2);
+    } catch(err) { setError("분석 오류: "+err.message); }
+    finally { setAnalyzing(false); }
+  };
+
+  var generate = async function() {
+    if(selectedConcept===null) { setError("컨셉을 선택해주세요."); return; }
+    setGenerating(true); setError(""); setImagePrompts([]); setShowImageSection(false);
+    try {
+      var fcs = await buildFileContent();
+      var mainKws = keywords.filter(function(k){ return k.isMain; }).map(function(k){ return k.text; }).join(", ");
+      var subKws = keywords.filter(function(k){ return !k.isMain; }).map(function(k){ return k.text; }).join(", ");
+      var concept = concepts[selectedConcept];
+      var blogTitle = selectedTitle!==null ? (titles[selectedTitle]||"") : "";
+      var prompt = "다음 정보로 네이버 블로그 글을 작성해주세요.\n- 대리점명: " + (dealer||"파트너 대리점") + "\n- 제품명: " + product + "\n- 메인 키워드: " + mainKws + "\n- 서브 키워드: " + subKws + "\n- 특이사항: " + (notes||"없음") + "\n- 블로그 컨셉: [" + concept.title + "] " + concept.desc + (blogTitle?"\n- 블로그 제목: "+blogTitle:"") + (files.length?"\n첨부 파일 "+files.length+"개의 스펙을 정확히 반영해주세요.":"");
+      var uc = fcs.length ? fcs.concat([{type:"text",text:prompt}]) : prompt;
+      var text = await callClaude([{role:"user",content:uc}], buildSystemPrompt(cond, activeStylePrompt, getExamplesText()), 8000);
+      // 자동 보완
+      var len = calcCharsLocal(text);
+      if (len < cond.charMin) {
+        var shortage = cond.charMin - len;
+        var extPrompt = "아래 블로그 원고는 현재 " + len + "자(공백 포함)로, 목표 " + cond.charMin + "자보다 약 " + shortage + "자 부족합니다.\n각 소제목 섹션의 설명을 더 풍부하게 확장하고, 구체적인 현장 사례나 사용 시나리오를 추가하여 공백 포함 " + cond.charMin + "자 이상이 되도록 원고 전체를 다시 작성해주세요.\n해시태그 30개도 반드시 마지막에 포함하세요.\n\n===== 기존 원고 =====\n" + text + "\n=====================";
+        text = await callClaude([{role:"user",content:extPrompt}], buildSystemPrompt(cond, activeStylePrompt, getExamplesText()), 9000);
+      }
+      setHistory([{label:"최초 원고",content:text,request:"",timestamp:new Date().toLocaleString("ko-KR"),title:blogTitle}]);
+      setActiveRev(0); setStep(3);
+    } catch(err) { setError("생성 오류: "+err.message); }
+    finally { setGenerating(false); }
+  };
+
+  var revise = async function() {
+    if(!revRequest.trim()) { setError("수정 요청을 입력해주세요."); return; }
+    setRevising(true); setError("");
+    try {
+      var cur = history[history.length-1];
+      var prompt = "아래는 기존 블로그 원고입니다.\n\n===== 기존 원고 =====\n" + cur.content + "\n=====================\n\n수정 요청: " + revRequest + "\n\n수정 요청을 반영하여 전체 원고를 다시 작성해주세요. 무관한 부분은 최대한 유지하세요.\n\n[중요] 수정본 작성 시 반드시:\n- 존댓말(합니다/입니다/하세요)로 작성\n- 공백 포함 " + cond.charMin + "자 이상 작성\n- 본문 맨 마지막에 해시태그 정확히 30개 포함 (절대 누락 금지)";
+      var text = await callClaude([{role:"user",content:prompt}], buildSystemPrompt(cond, activeStylePrompt, getExamplesText()), 8000);
+      var rev = {label:history.length+"차 수정",content:text,request:revRequest,timestamp:new Date().toLocaleString("ko-KR"),title:(history[0]||{}).title||""};
+      var nh = history.concat([rev]); setHistory(nh); setActiveRev(nh.length-1); setRevRequest("");
+    } catch(err) { setError("수정 오류: "+err.message); }
+    finally { setRevising(false); }
+  };
+
+  // ── 이미지 프롬프트 생성
+  var generateImagePrompts = async function() {
+    var cur = history[activeRev];
+    if (!cur) return;
+    setGeneratingImages(true); setError("");
+    try {
+      var aiConfig = IMAGE_AI_SYSTEMS[selectedAI];
+      var systemInst = aiConfig.instruction.replace(/\$\{"{count}"\}/g, String(imageCount)).replace(/\$\{"{count-1}"\}/g, String(imageCount-1));
+      var userPrompt = "다음 블로그 원고를 읽고 이미지 " + imageCount + "개의 프롬프트를 생성해주세요.\n\n===== 블로그 원고 =====\n" + cur.content + "\n=====================\n\n제목: " + (cur.title||product) + "\n대상 AI: " + aiConfig.label + "\n이미지 개수: " + imageCount + "개 (제목 썸네일 1개 + 본문 " + (imageCount-1) + "개)";
+      var txt = await callClaude([{role:"user",content:userPrompt}], systemInst, 4000);
+      var parsed = JSON.parse(txt.replace(/```json|```/g,"").trim());
+      setImagePrompts(parsed.images||[]);
+      setShowImageSection(true);
+    } catch(err) { setError("이미지 프롬프트 생성 오류: "+err.message); }
+    finally { setGeneratingImages(false); }
+  };
+
+  var copyImg = function(idx, text) {
+    navigator.clipboard.writeText(text);
+    setCopiedImgIdx(idx);
+    setTimeout(function(){ setCopiedImgIdx(null); }, 2000);
+  };
+
+  var copyAllPrompts = function() {
+    var all = imagePrompts.map(function(img, i) { return "[이미지 "+img.number+"] 위치: "+img.placement+"\n주제: "+img.subject+"\n프롬프트: "+img.prompt; }).join("\n\n");
+    navigator.clipboard.writeText(all);
+  };
+
+  var current = history[activeRev]||null;
+  var charCount = current ? calcCharsLocal(current.content) : 0;
+  var charOk = charCount>=cond.charMin && charCount<=cond.charMax;
+
+  var S = {
+    btnMain: function(dis){ return {width:"100%",padding:"13px",borderRadius:8,border:"none",background:dis?"#C8C8C4":C.text,color:dis?"#888":"#fff",fontSize:14,fontWeight:500,cursor:dis?"not-allowed":"pointer",fontFamily:"inherit"}; },
+    btnSub: {width:"100%",padding:"10px",borderRadius:8,border:"1px solid "+C.border,background:"transparent",color:C.text,fontSize:13,cursor:"pointer",marginTop:8,fontFamily:"inherit"},
+    toggleBtn: {padding:"8px 14px",borderRadius:8,border:"1px solid "+C.border,background:"transparent",color:C.text,fontSize:13,fontWeight:500,cursor:"pointer",fontFamily:"inherit"},
+    divider: {height:"1px",background:C.border,margin:"20px 0"},
+  };
+
+  return e("div",{style:{minHeight:"100vh",background:C.bg,fontFamily:"inherit",padding:"32px 20px",color:C.text}},
+    e("div",{style:{maxWidth:700,margin:"0 auto"}},
+
+      // ── 헤더
+      e("div",{style:{marginBottom:28}},
+        e("div",{style:{marginBottom:8}},
+          e("p",{style:{fontSize:11,fontWeight:500,color:C.muted,letterSpacing:"0.08em",textTransform:"uppercase",margin:"0 0 6px"}},"Blog-it · Linker"),
+          e("span",{style:{display:"inline-block",background:C.orange,color:"#fff",fontSize:11,fontWeight:600,padding:"2px 10px",borderRadius:4}},"내부직원용")
+        ),
+        e("h1",{style:{fontSize:22,fontWeight:500,margin:"0 0 5px",color:C.text}},"네이버 블로그 자동 생성"),
+        e("p",{style:{fontSize:14,color:C.muted,margin:0}},"Few-shot 예시 적용 · 이미지 프롬프트 생성 포함")
+      ),
+
+      // ── 스텝 바
+      e("div",{style:{display:"flex",gap:6,marginBottom:28}},
+        ["① 제품 정보","② 키워드·컨셉","③ 원고 작성"].map(function(s,i){
+          var active=step===i+1, done=step>i+1;
+          return e("div",{key:i,style:{flex:1,padding:"10px 0",borderRadius:8,border:active?"2px solid "+C.text:"1px solid "+C.border,background:active?C.surf:done?C.surf:C.bg,textAlign:"center"}},
+            e("span",{style:{fontSize:13,fontWeight:active?500:400,color:active?C.text:done?C.text:C.muted}},s));
+        })
+      ),
+
+      // ── STEP 1
+      e("div",{style:{marginBottom:24,opacity:step>1?0.5:1,pointerEvents:step>1?"none":"auto"}},
+        e("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14,marginBottom:14}},
+          e("div",null,e("label",{style:lbl},"대리점명"),e("input",{style:Object.assign({},inp,{width:"100%"}),value:dealer,onChange:function(ev){setDealer(ev.target.value);},placeholder:"예) ○○ 상사"})),
+          e("div",null,e("label",{style:lbl},"제품명 *"),e("input",{style:Object.assign({},inp,{width:"100%"}),value:product,onChange:function(ev){setProduct(ev.target.value);},placeholder:"예) 3M 9332K+"}))
+        ),
+        e("div",{style:{marginBottom:14}},
+          e("label",{style:lbl},"강조 포인트 / 특이사항"),
+          e("textarea",{style:Object.assign({},inp,{width:"100%",resize:"vertical",minHeight:64}),value:notes,onChange:function(ev){setNotes(ev.target.value);},placeholder:"예) KF94 인증, 건설현장 위주, 개별포장 강조"})
+        ),
+
+        e("div",{style:{marginBottom:14}},
+          e("label",{style:lbl},"제품 스펙 파일 (선택 · 여러 개 가능)"),
+          e("div",{style:{border:"1px dashed "+(dragging?"#534AB7":C.border),background:dragging?"#EEEDFE":C.bg,padding:"18px",borderRadius:8,textAlign:"center",cursor:"pointer"},
+            onClick:function(){fileRef.current.click();}, onDragOver:function(ev){ev.preventDefault();setDragging(true);}, onDragLeave:function(){setDragging(false);},
+            onDrop:function(ev){ev.preventDefault();setDragging(false);handleFiles(ev.dataTransfer.files);}},
+            e("div",{style:{fontSize:14,color:C.muted,marginBottom:3}},"📎  클릭 또는 드래그"),
+            e("div",{style:{fontSize:12,color:C.muted}},"PDF · JPG · PNG · WEBP · 여러 파일 동시 가능")
+          ),
+          e("input",{ref:fileRef,type:"file",accept:".pdf,image/*",multiple:true,style:{display:"none"},onChange:function(ev){handleFiles(ev.target.files);ev.target.value="";}}),
+          files.length>0 && e("div",{style:{marginTop:8,display:"flex",flexDirection:"column",gap:5}},
+            files.map(function(f,i){ return e("div",{key:i,style:{display:"flex",alignItems:"center",gap:10,padding:"8px 12px",background:C.surf,border:"1px solid "+C.border,borderRadius:8}},
+              e("span",null,f.type==="application/pdf"?"📄":"🖼️"),
+              e("span",{style:{fontSize:13,color:C.text,flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}},f.name),
+              e("span",{style:{fontSize:12,color:C.muted}},(f.size/1024).toFixed(0)+"KB"),
+              e("button",{style:{background:"none",border:"none",color:C.muted,cursor:"pointer",fontSize:14},onClick:function(){setFiles(function(p){return p.filter(function(_,j){return j!==i;});});}},"✕")); })
+          )
+        ),
+
+        e("div",{style:{display:"flex",gap:8,marginBottom:10,flexWrap:"wrap"}},
+          e("button",{style:S.toggleBtn,onClick:function(){setShowStyle(function(v){return !v;});}}, (showStyle?"▲":"▼")+"  글 스타일"),
+          e("button",{style:S.toggleBtn,onClick:function(){setShowCond(function(v){return !v;});}}, (showCond?"▲":"▼")+"  작성 조건"),
+          e("button",{
+            style:Object.assign({},S.toggleBtn,{borderColor:exampleFiles.length>0?"#534AB7":C.border,color:exampleFiles.length>0?C.accent:C.text,fontWeight:exampleFiles.length>0?600:400}),
+            onClick:function(){setShowExamples(function(v){return !v;});}
+          }, (showExamples?"▲":"▼")+"  학습 원고 "+ (exampleFiles.length>0 ? "("+exampleFiles.length+"편 적용중)" : "업로드"))
+        ),
+
+        // 학습 원고 업로드 패널
+        showExamples && e("div",{style:{marginBottom:12,padding:"16px",background:C.purpleLight,border:"1px solid #D4D0F0",borderRadius:12}},
+          e("div",{style:{marginBottom:10}},
+            e("div",{style:{fontSize:14,fontWeight:500,color:C.purpleDark,marginBottom:4}},"📚  학습 원고 업로드"),
+            e("div",{style:{fontSize:12,color:C.muted,lineHeight:1.6}},"잘 쓴 블로그 원고를 업로드하면 AI가 그 스타일을 학습하여 원고를 작성합니다.",e("br",null),"업로드하지 않으면 기본 내장 예시 5편이 사용됩니다.")
+          ),
+          e("div",{
+            style:{border:"1px dashed #7F77DD",background:"#fff",padding:"16px",borderRadius:8,textAlign:"center",cursor:"pointer",marginBottom:10},
+            onClick:function(){exFileRef.current.click();},
+            onDragOver:function(ev){ev.preventDefault();},
+            onDrop:function(ev){ev.preventDefault();handleExampleFiles(ev.dataTransfer.files);}
+          },
+            e("div",{style:{fontSize:14,color:C.muted,marginBottom:3}},"📄  클릭 또는 드래그"),
+            e("div",{style:{fontSize:12,color:C.muted}},".docx · .txt · .md 파일 · 여러 개 가능")
+          ),
+          e("input",{ref:exFileRef,type:"file",accept:".docx,.txt,.md",multiple:true,style:{display:"none"},onChange:function(ev){handleExampleFiles(ev.target.files);ev.target.value="";}}),
+          loadingExamples && e("div",{style:{fontSize:13,color:C.accent,padding:"8px 0"}},"⏳  파일 읽는 중..."),
+          exampleFiles.length>0 && e("div",{style:{display:"flex",flexDirection:"column",gap:6,marginBottom:10}},
+            exampleFiles.map(function(f,i){ return e("div",{key:i,style:{display:"flex",alignItems:"center",gap:10,padding:"8px 12px",background:"#fff",border:"1px solid #D4D0F0",borderRadius:8}},
+              e("span",{style:{fontSize:13}},"📝"),
+              e("span",{style:{fontSize:13,color:C.purpleDark,flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}},f.name),
+              e("span",{style:{fontSize:11,color:C.muted}},Math.round(f.text.length/100)/10+"K자"),
+              e("button",{style:{background:"none",border:"none",color:C.muted,cursor:"pointer",fontSize:13},onClick:function(){setExampleFiles(function(p){return p.filter(function(_,j){return j!==i;});});}},"✕")); })
+          ),
+          e("div",{style:{fontSize:12,padding:"8px 12px",background:"#fff",borderRadius:8,color:C.muted}},
+            exampleFiles.length > 0
+              ? e("span",null,"✅ 업로드된 원고 ",e("b",{style:{color:C.accent}},exampleFiles.length+"편")," 학습 적용 중 — 기본 예시 대체됨")
+              : e("span",null,"ℹ  기본 내장 예시 5편 사용 중 (원고 업로드 시 자동 대체)")
+          )
+        ),
+
+        showStyle && e("div",{style:{marginBottom:12,padding:"16px",background:C.surf,border:"1px solid "+C.border,borderRadius:12}},
+          e("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:12}},
+            STYLE_PRESETS.map(function(p){ var on=selectedStyle===p.id&&!customStyle.trim(); return e("div",{key:p.id,onClick:function(){setSelectedStyle(p.id);setCustomStyle("");},style:{padding:"12px 14px",border:on?"2px solid "+C.accent:"1px solid "+C.border,background:on?C.purpleLight:C.bg,borderRadius:10,cursor:"pointer"}},
+              e("div",{style:{fontSize:14,fontWeight:500,color:on?C.purpleDark:C.text,marginBottom:4}},p.label),
+              e("div",{style:{fontSize:12,color:C.muted,lineHeight:1.5}},p.desc)); })
+          ),
+          e("label",{style:{display:"block",fontSize:12,color:C.muted,marginBottom:5}},"직접 입력 (입력 시 위 프리셋 무시)"),
+          e("textarea",{style:Object.assign({},inp,{width:"100%",resize:"vertical",minHeight:80,fontSize:13}),value:customStyle,onChange:function(ev){setCustomStyle(ev.target.value);},placeholder:"예) 서론은 질문형으로 시작, 전문 용어 최소화..."})
+        ),
+
+        showCond && e("div",{style:{marginBottom:12,padding:"16px",background:C.surf,border:"1px solid "+C.border,borderRadius:12,display:"grid",gridTemplateColumns:"1fr 1fr",gap:"12px 18px"}},
+          [["글자수 최소","charMin"],["글자수 최대","charMax"],["메인 키워드 반복 최소","mainKwMin"],["메인 키워드 반복 최대","mainKwMax"],["서브 키워드 반복 최소","subKwMin"],["서브 키워드 반복 최대","subKwMax"]].map(function(item){
+            return e("div",{key:item[1]},e("label",{style:{display:"block",fontSize:12,color:C.muted,marginBottom:5}},item[0]),e("input",{type:"number",style:Object.assign({},inp,{width:"100%"}),value:cond[item[1]],onChange:function(ev){updateCond(item[1],ev.target.value);}}));
+          }).concat([e("p",{key:"sum",style:{gridColumn:"1/-1",fontSize:13,color:C.muted,margin:0,padding:"8px 12px",background:C.bg,borderRadius:8}},
+            "글자수 ",e("b",{style:{color:C.text}},cond.charMin+"~"+cond.charMax+"자")," · 메인 ",e("b",{style:{color:C.text}},cond.mainKwMin+"~"+cond.mainKwMax+"회")," · 서브 ",e("b",{style:{color:C.text}},cond.subKwMin+"~"+cond.subKwMax+"회")," · 해시태그 ",e("b",{style:{color:C.text}},"자동 30개")
+          )])
+        ),
+
+        e("button",{style:S.btnMain(analyzing),onClick:analyze,disabled:analyzing},analyzing?"⏳  분석 중...":"▶  키워드 · 컨셉 분석"),
+        step>1 && e("button",{style:S.btnSub,onClick:function(){setStep(1);setHistory([]);setConcepts([]);setKeywords([]);setFiles([]);setTitles([]);setSelectedTitle(null);setSelectedConcept(null);setImagePrompts([]);setShowImageSection(false);}},"↺  처음부터 다시")
+      ),
+
+      error && e("div",{style:{background:"#FEF2F2",border:"1px solid #FECACA",padding:"10px 14px",fontSize:13,color:"#B91C1C",marginBottom:16,borderRadius:8}},"⚠  "+error),
+
+      // ── STEP 2
+      step>=2 && e("div",{style:{marginBottom:24,opacity:step>2?0.5:1,pointerEvents:step>2?"none":"auto"}},
+        e("div",{style:S.divider}),
+        e("div",{style:{marginBottom:20}},
+          e("label",{style:Object.assign({},lbl,{marginBottom:10})},"추천 키워드 ",e("span",{style:{fontSize:12,color:C.muted,fontWeight:400}},"— 클릭: 메인/서브 전환 · ✕ 삭제")),
+          e("div",{style:{display:"flex",flexWrap:"wrap",gap:8,marginBottom:10}},
+            keywords.map(function(kw,i){ var isMain=kw.isMain; return e("div",{key:i,style:{display:"flex",alignItems:"center",gap:6,padding:"7px 12px",borderRadius:99,border:isMain?"1px solid #7F77DD":"1px solid "+C.border,background:isMain?C.purpleLight:C.surf,cursor:"pointer"},onClick:function(){setKeywords(function(p){return p.map(function(k,j){return j===i?Object.assign({},k,{isMain:!k.isMain}):k;});});}},
+              isMain && e("span",{style:{fontSize:10,background:C.accent,color:"#fff",borderRadius:99,padding:"2px 7px",fontWeight:500}},"M"),
+              e("span",{style:{fontSize:13,fontWeight:500,color:isMain?C.purpleDark:C.text}},kw.text),
+              e("span",{style:{fontSize:12,color:C.muted,cursor:"pointer"},onClick:function(ev){ev.stopPropagation();setKeywords(function(p){return p.filter(function(_,j){return j!==i;});});}}," ✕")); })
+          ),
+          e("div",{style:{display:"flex",gap:8}},
+            e("input",{style:Object.assign({},inp,{flex:1}),value:kwInput,onChange:function(ev){setKwInput(ev.target.value);},onKeyDown:function(ev){if(ev.key==="Enter"){var t=kwInput.trim();if(t&&!keywords.find(function(k){return k.text===t;})){setKeywords(function(p){return p.concat([{text:t,isMain:false}]);}); }setKwInput("");}},placeholder:"키워드 직접 추가 후 Enter"}),
+            e("button",{style:{padding:"10px 16px",borderRadius:8,border:"1px solid "+C.border,background:C.surf,color:C.text,fontSize:13,cursor:"pointer",fontFamily:"inherit"},onClick:function(){var t=kwInput.trim();if(t&&!keywords.find(function(k){return k.text===t;})){setKeywords(function(p){return p.concat([{text:t,isMain:false}]);}); }setKwInput("");}},"+ 추가")
+          ),
+          e("p",{style:{fontSize:13,color:C.muted,margin:"8px 0 0"}},"메인 ",e("b",{style:{color:C.accent,fontWeight:500}},keywords.filter(function(k){return k.isMain;}).length+"개")," · 서브 "+keywords.filter(function(k){return !k.isMain;}).length+"개 · 합계 "+keywords.length+"개")
+        ),
+        e("div",{style:{marginBottom:20}},
+          e("label",{style:Object.assign({},lbl,{marginBottom:10})},"블로그 컨셉 선택 *"),
+          e("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}},
+            concepts.map(function(con,i){ var on=selectedConcept===i; return e("div",{key:i,onClick:function(){setSelectedConcept(i);},style:{padding:"14px 16px",borderRadius:12,border:on?"2px solid "+C.accent:"1px solid "+C.border,background:on?C.purpleLight:C.surf,cursor:"pointer"}},
+              e("div",{style:{fontSize:14,fontWeight:500,color:on?C.purpleDark:C.text,marginBottom:6,display:"flex",alignItems:"center",gap:6}},on && e("span",{style:{width:16,height:16,borderRadius:"50%",background:C.accent,display:"inline-flex",alignItems:"center",justifyContent:"center",fontSize:10,color:"#fff",flexShrink:0}},"✓"),con.title),
+              e("div",{style:{fontSize:13,color:on?C.purpleDark:C.muted,lineHeight:1.6}},con.desc)); })
+          )
+        ),
+        titles.length>0 && e("div",{style:{marginBottom:20}},
+          e("label",{style:Object.assign({},lbl,{marginBottom:10})},"블로그 제목 선택 ",e("span",{style:{fontSize:13,color:C.muted,fontWeight:400}},"(선택사항)")),
+          e("div",{style:{display:"flex",flexDirection:"column",gap:8}},
+            titles.map(function(t,i){ var on=selectedTitle===i; return e("div",{key:i,onClick:function(){setSelectedTitle(on?null:i);},style:{display:"flex",alignItems:"center",gap:12,padding:"12px 16px",borderRadius:10,border:on?"2px solid "+C.accent:"1px solid "+C.border,background:on?C.purpleLight:C.surf,cursor:"pointer"}},
+              e("span",{style:{fontSize:12,color:on?C.accent:C.muted,minWidth:18,fontWeight:500}},on?"✓":i+1),
+              e("span",{style:{fontSize:14,color:on?C.purpleDark:C.text,lineHeight:1.5,fontWeight:on?500:400}},t)); })
+          )
+        ),
+        e("button",{style:S.btnMain(generating||selectedConcept===null),onClick:generate,disabled:generating||selectedConcept===null},generating?"⏳  원고 생성 중...":"▶  원고 생성")
+      ),
+
+      // ── STEP 3
+      step===3 && history.length>0 && e("div",null,
+        e("div",{style:S.divider}),
+        current && current.title && e("div",{style:{marginBottom:14}},
+          e("p",{style:{fontSize:12,color:C.muted,margin:"0 0 4px"}},"블로그 제목"),
+          e("div",{style:{fontSize:16,fontWeight:500,color:C.text}},current.title)
+        ),
+        e("div",{style:{display:"flex",gap:6,marginBottom:16,flexWrap:"wrap"}},
+          history.map(function(h,i){ var on=activeRev===i; return e("button",{key:i,onClick:function(){setActiveRev(i);},style:{padding:"7px 16px",borderRadius:8,border:on?"2px solid "+C.accent:"1px solid "+C.border,background:on?C.purpleLight:"transparent",color:on?C.purpleDark:C.muted,fontSize:13,fontWeight:on?500:400,cursor:"pointer",fontFamily:"inherit"}},h.label); })
+        ),
+        current && e("p",{style:{fontSize:12,color:C.muted,marginBottom:12}},current.label+" · "+current.timestamp+(current.request?" · 요청: \""+current.request+"\"":"")),
+        e("div",{style:{background:C.surf,border:"1px solid "+C.border,borderRadius:12,marginBottom:14}},
+          e("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"12px 16px",borderBottom:"1px solid "+C.border}},
+            e("span",{style:{fontSize:13,fontWeight:500,color:C.text}},"원고 내용"),
+            e("div",{style:{display:"flex",gap:8}},
+              e("button",{style:{padding:"7px 16px",borderRadius:8,border:"1px solid "+(copied?"#534AB7":C.border),background:copied?C.purpleLight:"transparent",color:copied?C.purpleDark:C.text,fontSize:13,fontWeight:500,cursor:"pointer",fontFamily:"inherit"},onClick:function(){navigator.clipboard.writeText(current&&current.content||"");setCopied(true);setTimeout(function(){setCopied(false);},2000);}},copied?"✓ 복사됨":"복사"),
+              e("button",{style:{padding:"7px 16px",borderRadius:8,border:"1px solid "+C.border,background:"transparent",color:C.text,fontSize:13,fontWeight:500,cursor:"pointer",fontFamily:"inherit"},onClick:function(){exportToWord(current&&current.content||"",product,dealer||"대리점",current&&current.label||"",current&&current.title||"");}},"↓ Word 저장")
+            )
+          ),
+          e("div",{style:{padding:"20px",fontSize:14,lineHeight:1.85,color:C.text,wordBreak:"break-word",maxHeight:520,overflowY:"auto"},dangerouslySetInnerHTML:{__html:renderMarkdown(current&&current.content||"")}}),
+          e("div",{style:{display:"flex",gap:16,padding:"10px 16px",borderTop:"1px solid "+C.border,flexWrap:"wrap",background:"#FAFAF8",borderRadius:"0 0 12px 12px"}},
+            e("span",{style:{fontSize:13,color:C.muted}},"글자수(공백포함) ",e("b",{style:{color:charOk?"#3B6D11":"#B91C1C",fontWeight:500}},charCount.toLocaleString())," / "+cond.charMin+"~"+cond.charMax),
+            e("span",{style:{fontSize:13,color:C.muted}},"수정 ",e("b",{style:{color:C.text,fontWeight:500}},(history.length-1)+"회")),
+            files.length>0 && e("span",{style:{fontSize:13,color:C.muted}},"스펙 파일 ",e("b",{style:{color:C.text,fontWeight:500}},files.length+"개"))
+          )
+        ),
+
+        // ── 수정 요청
+        e("div",{style:{background:C.surf,border:"1px solid "+C.border,borderRadius:12,padding:"16px",marginBottom:16}},
+          e("label",{style:{display:"block",fontSize:13,fontWeight:500,color:C.text,marginBottom:8}},history.length+"차 수정 예정"),
+          e("textarea",{style:Object.assign({},inp,{width:"100%",resize:"vertical",minHeight:72,marginBottom:10}),value:revRequest,onChange:function(ev){setRevRequest(ev.target.value);},placeholder:'"3단락 톤을 더 부드럽게 바꿔줘"\n"마무리 문장을 더 강하게 다듬어줘"'}),
+          e("button",{style:S.btnMain(!revRequest.trim()||revising),onClick:revise,disabled:revising||!revRequest.trim()},revising?"⏳  수정 중...":"✏  수정 요청")
+        ),
+
+        // ── 이미지 프롬프트 섹션
+        e("div",{style:{background:C.orangeLight,border:"1px solid #FCD34D",borderRadius:12,padding:"16px",marginBottom:16}},
+          e("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}},
+            e("div",null,
+              e("div",{style:{fontSize:14,fontWeight:500,color:"#92400E",marginBottom:3}},"📸  이미지 프롬프트 생성"),
+              e("div",{style:{fontSize:12,color:"#B45309"}},"원고를 분석해서 이미지 배치와 프롬프트를 자동 생성합니다.")
+            )
+          ),
+          e("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:12}},
+            e("div",null,
+              e("label",{style:{display:"block",fontSize:12,color:"#92400E",marginBottom:5,fontWeight:500}},"이미지 개수 (기본 10개)"),
+              e("input",{type:"number",min:3,max:20,style:Object.assign({},inp,{width:"100%",background:"#fff"}),value:imageCount,onChange:function(ev){var n=parseInt(ev.target.value);if(!isNaN(n)&&n>=3&&n<=20)setImageCount(n);}})
+            ),
+            e("div",null,
+              e("label",{style:{display:"block",fontSize:12,color:"#92400E",marginBottom:5,fontWeight:500}},"이미지 AI 선택"),
+              e("div",{style:{display:"flex",gap:6}},
+                Object.entries(IMAGE_AI_SYSTEMS).map(function(entry){ var id=entry[0], ai=entry[1]; var on=selectedAI===id; return e("button",{key:id,onClick:function(){setSelectedAI(id);},style:{flex:1,padding:"9px 8px",borderRadius:8,border:on?"2px solid "+ai.color:"1px solid "+C.border,background:on?ai.light:"#fff",color:on?ai.color:C.muted,fontSize:12,fontWeight:on?600:400,cursor:"pointer",fontFamily:"inherit"}},ai.label); })
+              )
+            )
+          ),
+          e("button",{
+            style:{width:"100%",padding:"12px",borderRadius:8,border:"none",background:generatingImages?"#D1D5DB":C.orange,color:"#fff",fontSize:13,fontWeight:500,cursor:generatingImages?"not-allowed":"pointer",fontFamily:"inherit"},
+            onClick:generateImagePrompts, disabled:generatingImages
+          }, generatingImages?"⏳  프롬프트 생성 중...":"🎨  이미지 프롬프트 생성")
+        ),
+
+        // ── 생성된 이미지 프롬프트 결과
+        showImageSection && imagePrompts.length>0 && e("div",{style:{background:C.surf,border:"1px solid "+C.border,borderRadius:12,padding:"16px",marginBottom:16}},
+          e("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}},
+            e("div",null,
+              e("div",{style:{fontSize:14,fontWeight:500,color:C.text,marginBottom:3}},"이미지 프롬프트 "+imagePrompts.length+"개 — "+IMAGE_AI_SYSTEMS[selectedAI].label+"용"),
+              e("div",{style:{fontSize:12,color:C.muted}},"각 프롬프트를 복사하여 AI 이미지 생성 도구에 붙여넣으세요.")
+            ),
+            e("button",{style:{padding:"7px 14px",borderRadius:8,border:"1px solid "+C.border,background:"transparent",color:C.text,fontSize:12,cursor:"pointer",fontFamily:"inherit"},onClick:copyAllPrompts},"전체 복사")
+          ),
+          e("div",{style:{display:"flex",flexDirection:"column",gap:10}},
+            imagePrompts.map(function(img,i){
+              var ai = IMAGE_AI_SYSTEMS[selectedAI];
+              var isCopied = copiedImgIdx === i;
+              var isThumb = img.number === 1;
+              return e("div",{key:i,style:{padding:"14px",borderRadius:10,border:"1px solid "+(isThumb?"#FCD34D":C.border),background:isThumb?C.orangeLight:C.bg}},
+                e("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:8}},
+                  e("div",null,
+                    e("span",{style:{display:"inline-block",fontSize:11,fontWeight:600,background:isThumb?C.orange:C.accent,color:"#fff",padding:"2px 8px",borderRadius:4,marginRight:8}},"이미지 "+img.number+(isThumb?" (썸네일)":"")),
+                    e("span",{style:{fontSize:12,color:C.muted}},"📍 "+img.placement)
+                  ),
+                  e("button",{style:{padding:"5px 12px",borderRadius:6,border:"1px solid "+(isCopied?ai.color:C.border),background:isCopied?ai.light:"transparent",color:isCopied?ai.color:C.muted,fontSize:11,cursor:"pointer",fontFamily:"inherit",whiteSpace:"nowrap"},onClick:function(){copyImg(i, img.prompt);}},isCopied?"✓ 복사됨":"복사")
+                ),
+                e("div",{style:{fontSize:13,fontWeight:500,color:C.text,marginBottom:6}},"주제: "+img.subject),
+                e("div",{style:{fontSize:12,color:C.muted,background:C.surf,padding:"10px",borderRadius:6,lineHeight:1.6,fontFamily:"monospace",wordBreak:"break-all"}},img.prompt)
+              );
+            })
+          )
+        ),
+
+        // ── 수정 이력
+        history.length>1 && e("div",{style:{marginBottom:16,padding:"12px 16px",background:C.surf,border:"1px solid "+C.border,borderRadius:10}},
+          e("p",{style:{fontSize:12,fontWeight:500,color:C.muted,margin:"0 0 10px",textTransform:"uppercase",letterSpacing:"0.05em"}},"수정 이력"),
+          history.slice(1).map(function(h,i){ return e("div",{key:i,style:{padding:"8px 0",borderBottom:i<history.length-2?"1px solid "+C.border:"none",fontSize:13}},
+            e("b",{style:{color:C.text,fontWeight:500,marginRight:10}},h.label),
+            e("span",{style:{color:C.muted,marginRight:10}},h.timestamp),
+            e("span",{style:{color:C.text}},'"'+h.request+'"')); })
+        )
+      )
+    )
+  );
+}
+
+ReactDOM.render(React.createElement(App), document.getElementById("root"));
+</script>
+</body>
+</html>
