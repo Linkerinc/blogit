@@ -234,6 +234,33 @@ function fileToBase64(file) {
   return new Promise((res,rej) => { const r=new FileReader(); r.onload=()=>res(r.result.split(",")[1]); r.onerror=()=>rej(new Error("읽기 실패")); r.readAsDataURL(file); });
 }
 
+// 이미지를 보내기 전 장변 1568px로 자동 축소 + JPEG 재인코딩 (용량/해상도 초과로 인한 API 오류 방지)
+function imageToResizedBlock(file) {
+  return new Promise(function(res, rej) {
+    var MAX_EDGE = 1568;
+    var url = URL.createObjectURL(file);
+    var img = new Image();
+    img.onload = function() {
+      try {
+        var w = img.naturalWidth, h = img.naturalHeight;
+        var scale = Math.min(1, MAX_EDGE / Math.max(w, h));
+        var nw = Math.max(1, Math.round(w * scale));
+        var nh = Math.max(1, Math.round(h * scale));
+        var canvas = document.createElement("canvas");
+        canvas.width = nw; canvas.height = nh;
+        var ctx = canvas.getContext("2d");
+        ctx.fillStyle = "#FFFFFF"; ctx.fillRect(0, 0, nw, nh); // 투명 PNG 대비 흰 배경
+        ctx.drawImage(img, 0, 0, nw, nh);
+        var dataUrl = canvas.toDataURL("image/jpeg", 0.85);
+        URL.revokeObjectURL(url);
+        res({ media_type: "image/jpeg", data: dataUrl.split(",")[1] });
+      } catch(err) { URL.revokeObjectURL(url); rej(err); }
+    };
+    img.onerror = function() { URL.revokeObjectURL(url); rej(new Error("이미지 로드 실패")); };
+    img.src = url;
+  });
+}
+
 function calcChars(t) { return t.replace(/#[^\s#]+(\s|$)/g,"").trim().length; }
 
 function exportToWord(content, product, dealer, revLabel, blogTitle) {
@@ -522,8 +549,12 @@ function App() {
 
   var buildFileContent = async function() {
     return await Promise.all(files.map(async function(f) {
+      if (f.type.startsWith("image/")) {
+        var im = await imageToResizedBlock(f);
+        return {type:"image",source:{type:"base64",media_type:im.media_type,data:im.data}};
+      }
       var b64 = await fileToBase64(f);
-      return f.type.startsWith("image/") ? {type:"image",source:{type:"base64",media_type:f.type,data:b64}} : {type:"document",source:{type:"base64",media_type:"application/pdf",data:b64}};
+      return {type:"document",source:{type:"base64",media_type:"application/pdf",data:b64}};
     }));
   };
 
